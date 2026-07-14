@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   update:
@@ -43,11 +44,17 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         run: nix build
 
-      - name: Commit and push
+      - name: Create Pull Request
         if: steps.diff.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "chore: auto-update waycal and flake inputs"
-          git push
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: update waycal and flake inputs"
+          title: "chore: update waycal and flake inputs"
+          body: |
+            Automated update:
+            - Synced latest upstream [ForrestKnight/waycal](https://github.com/ForrestKnight/waycal)
+            - Updated nix flake inputs
+            
+            Built successfully before creating this PR.
+          branch: auto-update
+          delete-branch: true
