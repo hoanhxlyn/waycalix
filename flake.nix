@@ -53,7 +53,7 @@
 
       devShells.default = pkgs.mkShell {
         inputsFrom = [self.packages.${system}.waycal];
-        packages = [rustToolchain];
+        packages = [rustToolchain pkgs.cachix];
       };
     });
 }
