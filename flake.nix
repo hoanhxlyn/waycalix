@@ -21,7 +21,7 @@
       };
       rustToolchain = pkgs.rust-bin.stable.latest.default;
     in {
-      packages.default = pkgs.rustPlatform.buildRustPackage {
+      packages.waycal = pkgs.rustPlatform.buildRustPackage {
         pname = "waycal";
         version = "0.2.0";
 
@@ -49,8 +49,10 @@
         };
       };
 
+      packages.default = self.packages.${system}.waycal;
+
       devShells.default = pkgs.mkShell {
-        inputsFrom = [self.packages.${system}.default];
+        inputsFrom = [self.packages.${system}.waycal];
         packages = [rustToolchain];
       };
     });
