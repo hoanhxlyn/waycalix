@@ -31,9 +31,17 @@
             defaultText = lib.literalExpression "inputs.waycal.packages.<system>.waycal";
             description = "The waycal package to use.";
           };
+          css = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            description = "CSS stylesheet written to ~/.config/waycal/style.css.";
+          };
         };
         config = lib.mkIf cfg.enable {
           home.packages = [cfg.package];
+          xdg.configFile."waycal/style.css" = lib.mkIf (cfg.css != null) {
+            text = cfg.css;
+          };
         };
       };
     }
