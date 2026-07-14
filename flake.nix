@@ -14,7 +14,30 @@
     flake-utils,
     rust-overlay,
   }:
-    flake-utils.lib.eachDefaultSystem (system: let
+    {
+      homeManagerModules.default = {
+        config,
+        lib,
+        pkgs,
+        ...
+      }: let
+        cfg = config.programs.waycal;
+      in {
+        options.programs.waycal = {
+          enable = lib.mkEnableOption "waycal, a tiny Wayland calendar popup";
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.waycal;
+            defaultText = lib.literalExpression "inputs.waycal.packages.<system>.waycal";
+            description = "The waycal package to use.";
+          };
+        };
+        config = lib.mkIf cfg.enable {
+          home.packages = [cfg.package];
+        };
+      };
+    }
+    // flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
         inherit system;
         overlays = [rust-overlay.overlays.default];
