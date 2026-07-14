@@ -1,4 +1,4 @@
-//! Window construction, month rendering, and keyboard interaction.
+//! Window construction, month/year pickers, and keyboard interaction.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,6 +10,13 @@ use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 use crate::date;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ViewMode {
+    Days,
+    Months,
+    Years,
+}
 
 // Copy the selected date to the Wayland clipboard via wl-copy. wl-copy forks a
 // background process to serve the selection, so it survives this app exiting;
@@ -31,28 +38,32 @@ pub fn build(app: &gtk4::Application) {
 
     window.init_layer_shell();
     window.set_layer(Layer::Top);
-    // Exclusive so the popup grabs the keyboard the moment it opens; OnDemand
-    // only grants focus on a pointer click, which never happens when launched
-    // from a compositor keybind (arrows/Enter/Esc would go nowhere).
     window.set_keyboard_mode(KeyboardMode::Exclusive);
-    // Anchor nothing: with no edges set, the layer-shell compositor centers the
-    // surface on the output.
     for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
         window.set_anchor(edge, false);
     }
 
-    let header = gtk4::Label::new(None);
-    header.add_css_class("waycal-header");
+    let month_label = gtk4::Label::new(None);
+    month_label.add_css_class("waycal-header");
+    month_label.set_halign(gtk4::Align::End);
+    month_label.add_css_class("waycal-clickable");
+
+    let year_label = gtk4::Label::new(None);
+    year_label.add_css_class("waycal-header");
+    year_label.set_halign(gtk4::Align::Start);
+    year_label.add_css_class("waycal-clickable");
+
+    let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     header.set_halign(gtk4::Align::Center);
+    header.append(&month_label);
+    header.append(&year_label);
 
     let grid = gtk4::Grid::new();
     grid.set_row_spacing(2);
     grid.set_column_spacing(2);
     grid.set_halign(gtk4::Align::Center);
 
-    let footer = gtk4::Label::new(Some(
-        "\u{2190}\u{2192} day   \u{2191}\u{2193} week   \u{21DF}\u{21DE} mo   \u{23CE} copy   t today",
-    ));
+    let footer = gtk4::Label::new(Some("hjkl nav   t today   ? help"));
     footer.add_css_class("waycal-footer");
     footer.set_halign(gtk4::Align::Center);
 
@@ -64,37 +75,203 @@ pub fn build(app: &gtk4::Application) {
     window.set_child(Some(&root));
 
     let state = Rc::new(RefCell::new(Local::now().date_naive()));
-    render(&grid, &header, *state.borrow());
+    let view = Rc::new(RefCell::new(ViewMode::Days));
+    let cursor = Rc::new(RefCell::new(0usize));
+    let help_popover: Rc<RefCell<Option<gtk4::Popover>>> = Rc::new(RefCell::new(None));
+    render_days(&grid, &month_label, &year_label, *state.borrow());
+
+    // Click month label → month picker
+    {
+        let state = state.clone();
+        let view = view.clone();
+        let cursor = cursor.clone();
+        let grid = grid.clone();
+        let ml = month_label.clone();
+        let yl = year_label.clone();
+        let ft = footer.clone();
+        let click = gtk4::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            *view.borrow_mut() = ViewMode::Months;
+            *cursor.borrow_mut() = state.borrow().month() as usize - 1;
+            render_months(&grid, &ml, &yl, &ft, &state, &view, &cursor, *state.borrow());
+        });
+        month_label.add_controller(click);
+    }
+
+    // Click year label → year picker
+    {
+        let state = state.clone();
+        let view = view.clone();
+        let cursor = cursor.clone();
+        let grid = grid.clone();
+        let ml = month_label.clone();
+        let yl = year_label.clone();
+        let ft = footer.clone();
+        let click = gtk4::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            *view.borrow_mut() = ViewMode::Years;
+            *cursor.borrow_mut() = 0;
+            render_years(&grid, &ml, &yl, &ft, &state, &view, &cursor, *state.borrow());
+        });
+        year_label.add_controller(click);
+    }
 
     let key = gtk4::EventControllerKey::new();
     {
         let state = state.clone();
+        let view = view.clone();
+        let cursor = cursor.clone();
+        let help_popover = help_popover.clone();
         let grid = grid.clone();
-        let header = header.clone();
+        let month_label = month_label.clone();
+        let year_label = year_label.clone();
+        let footer = footer.clone();
         let window = window.clone();
         key.connect_key_pressed(move |_, keyval, _, _| {
-            let current = *state.borrow();
-            let next = match keyval {
-                gdk::Key::Left => date::shift_days(current, -1),
-                gdk::Key::Right => date::shift_days(current, 1),
-                gdk::Key::Up => date::shift_days(current, -7),
-                gdk::Key::Down => date::shift_days(current, 7),
-                gdk::Key::Page_Up => date::shift_month(current, -1),
-                gdk::Key::Page_Down => date::shift_month(current, 1),
-                gdk::Key::t | gdk::Key::T => Local::now().date_naive(),
-                gdk::Key::Return | gdk::Key::KP_Enter => {
-                    copy_date(current);
-                    window.close();
-                    return glib::Propagation::Stop;
+            // q always closes help popover first if open
+            if (keyval == gdk::Key::q || keyval == gdk::Key::Q)
+                && let Some(pop) = help_popover.borrow_mut().take()
+            {
+                pop.popdown();
+                pop.unparent();
+                return glib::Propagation::Stop;
+            }
+
+            let current_view = *view.borrow();
+            match current_view {
+                ViewMode::Days => {
+                    let current = *state.borrow();
+                    match keyval {
+                        gdk::Key::Left | gdk::Key::h => {
+                            let next = date::shift_days(current, -1);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::Right | gdk::Key::l => {
+                            let next = date::shift_days(current, 1);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::Up | gdk::Key::k => {
+                            let next = date::shift_days(current, -7);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::Down | gdk::Key::j => {
+                            let next = date::shift_days(current, 7);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::Page_Up => {
+                            let next = date::shift_month(current, -1);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::Page_Down => {
+                            let next = date::shift_month(current, 1);
+                            *state.borrow_mut() = next;
+                            render_days(&grid, &month_label, &year_label, next);
+                        }
+                        gdk::Key::t | gdk::Key::T => {
+                            *state.borrow_mut() = Local::now().date_naive();
+                            render_days(&grid, &month_label, &year_label, Local::now().date_naive());
+                        }
+                        gdk::Key::m | gdk::Key::M => {
+                            *view.borrow_mut() = ViewMode::Months;
+                            *cursor.borrow_mut() = current.month() as usize - 1;
+                            render_months(&grid, &month_label, &year_label, &footer, &state, &view, &cursor, current);
+                        }
+                        gdk::Key::y | gdk::Key::Y => {
+                            *view.borrow_mut() = ViewMode::Years;
+                            *cursor.borrow_mut() = 0;
+                            render_years(&grid, &month_label, &year_label, &footer, &state, &view, &cursor, current);
+                        }
+                        gdk::Key::question => {
+                            let pop = show_help(&window);
+                            *help_popover.borrow_mut() = Some(pop);
+                        }
+                        gdk::Key::Return | gdk::Key::KP_Enter => {
+                            copy_date(current);
+                            window.close();
+                            return glib::Propagation::Stop;
+                        }
+                        gdk::Key::q | gdk::Key::Q => {
+                            window.close();
+                            return glib::Propagation::Stop;
+                        }
+                        _ => return glib::Propagation::Proceed,
+                    };
                 }
-                gdk::Key::Escape => {
-                    window.close();
-                    return glib::Propagation::Stop;
+                ViewMode::Months => {
+                    let c = *cursor.borrow();
+                    match keyval {
+                        gdk::Key::Left | gdk::Key::h => {
+                            if c > 0 { *cursor.borrow_mut() = c - 1; }
+                        }
+                        gdk::Key::Right | gdk::Key::l => {
+                            if c < 11 { *cursor.borrow_mut() = c + 1; }
+                        }
+                        gdk::Key::Up | gdk::Key::k => {
+                            if c >= 4 { *cursor.borrow_mut() = c - 4; }
+                        }
+                        gdk::Key::Down | gdk::Key::j => {
+                            if c < 8 { *cursor.borrow_mut() = c + 4; }
+                        }
+                        gdk::Key::Return | gdk::Key::KP_Enter => {
+                            let m = (c + 1) as u32;
+                            let current = *state.borrow();
+                            let day = current.day().min(date::days_in_month(current.year(), m));
+                            let next = NaiveDate::from_ymd_opt(current.year(), m, day).unwrap();
+                            *state.borrow_mut() = next;
+                            *view.borrow_mut() = ViewMode::Days;
+                            render_days(&grid, &month_label, &year_label, next);
+                            return glib::Propagation::Stop;
+                        }
+                        gdk::Key::q | gdk::Key::Q => {
+                            *view.borrow_mut() = ViewMode::Days;
+                            render_days(&grid, &month_label, &year_label, *state.borrow());
+                            return glib::Propagation::Stop;
+                        }
+                        _ => return glib::Propagation::Proceed,
+                    }
+                    render_months(&grid, &month_label, &year_label, &footer, &state, &view, &cursor, *state.borrow());
                 }
-                _ => return glib::Propagation::Proceed,
-            };
-            *state.borrow_mut() = next;
-            render(&grid, &header, next);
+                ViewMode::Years => {
+                    let c = *cursor.borrow();
+                    match keyval {
+                        gdk::Key::Left | gdk::Key::h => {
+                            if c > 0 { *cursor.borrow_mut() = c - 1; }
+                        }
+                        gdk::Key::Right | gdk::Key::l => {
+                            if c < 11 { *cursor.borrow_mut() = c + 1; }
+                        }
+                        gdk::Key::Up | gdk::Key::k => {
+                            if c >= 4 { *cursor.borrow_mut() = c - 4; }
+                        }
+                        gdk::Key::Down | gdk::Key::j => {
+                            if c < 8 { *cursor.borrow_mut() = c + 4; }
+                        }
+                        gdk::Key::Return | gdk::Key::KP_Enter => {
+                            let current = *state.borrow();
+                            let base_year = (current.year() / 12) * 12;
+                            let y = base_year + c as i32;
+                            let day = current.day().min(date::days_in_month(y, current.month()));
+                            let next = NaiveDate::from_ymd_opt(y, current.month(), day).unwrap();
+                            *state.borrow_mut() = next;
+                            *view.borrow_mut() = ViewMode::Days;
+                            render_days(&grid, &month_label, &year_label, next);
+                            return glib::Propagation::Stop;
+                        }
+                        gdk::Key::q | gdk::Key::Q => {
+                            *view.borrow_mut() = ViewMode::Days;
+                            render_days(&grid, &month_label, &year_label, *state.borrow());
+                            return glib::Propagation::Stop;
+                        }
+                        _ => return glib::Propagation::Proceed,
+                    }
+                    render_years(&grid, &month_label, &year_label, &footer, &state, &view, &cursor, *state.borrow());
+                }
+            }
             glib::Propagation::Stop
         });
     }
@@ -103,12 +280,45 @@ pub fn build(app: &gtk4::Application) {
     window.present();
 }
 
-fn render(grid: &gtk4::Grid, header: &gtk4::Label, selected: NaiveDate) {
-    header.set_text(&format!(
-        "{} {}",
-        date::month_name(selected.month()),
-        selected.year()
-    ));
+fn show_help(parent: &gtk4::ApplicationWindow) -> gtk4::Popover {
+    let popover = gtk4::Popover::new();
+    popover.set_parent(parent);
+    popover.set_autohide(false);
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk4::Align::Center);
+    popover.set_valign(gtk4::Align::Center);
+
+    let text = gtk4::Label::new(None);
+    text.set_use_markup(true);
+    text.set_markup(
+        "<b>Day view</b>\n\
+         h j k l / arrows   navigate days\n\
+         Page Up/Down       prev / next month\n\
+         m                  month picker\n\
+         y                  year picker\n\
+         t                  jump to today\n\
+         Enter              copy date\n\
+         q                  close\n\
+         ?                  this help\n\n\
+         <b>Month / Year picker</b>\n\
+         h j k l / arrows   navigate\n\
+         Enter              select\n\
+         q                  back to day view",
+    );
+    text.set_halign(gtk4::Align::Start);
+    text.set_margin_start(24);
+    text.set_margin_end(24);
+    text.set_margin_top(16);
+    text.set_margin_bottom(16);
+
+    popover.set_child(Some(&text));
+    popover.popup();
+    popover
+}
+
+fn render_days(grid: &gtk4::Grid, month_label: &gtk4::Label, year_label: &gtk4::Label, selected: NaiveDate) {
+    month_label.set_text(date::month_name(selected.month()));
+    year_label.set_text(&selected.year().to_string());
 
     while let Some(child) = grid.first_child() {
         grid.remove(&child);
@@ -167,6 +377,110 @@ fn render(grid: &gtk4::Grid, header: &gtk4::Label, selected: NaiveDate) {
         let lbl = gtk4::Label::new(Some(&day.to_string()));
         lbl.add_css_class("waycal-day");
         lbl.add_css_class("dim");
+        grid.attach(&lbl, col, row, 1, 1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_months(
+    grid: &gtk4::Grid,
+    month_label: &gtk4::Label,
+    year_label: &gtk4::Label,
+    footer: &gtk4::Label,
+    state: &Rc<RefCell<NaiveDate>>,
+    view: &Rc<RefCell<ViewMode>>,
+    cursor: &Rc<RefCell<usize>>,
+    selected: NaiveDate,
+) {
+    month_label.set_text(&selected.year().to_string());
+    year_label.set_text("");
+    footer.set_text("hjkl nav   Enter select   q back");
+
+    while let Some(child) = grid.first_child() {
+        grid.remove(&child);
+    }
+
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let cur = *cursor.borrow();
+
+    for (i, name) in months.iter().enumerate() {
+        let col = (i % 4) as i32;
+        let row = i / 4;
+        let lbl = gtk4::Label::new(Some(name));
+        lbl.add_css_class("waycal-month");
+        if i == cur {
+            lbl.add_css_class("selected");
+        }
+        {
+            let state = state.clone();
+            let view = view.clone();
+            let grid = grid.clone();
+            let month_label = month_label.clone();
+            let year_label = year_label.clone();
+            let m = (i + 1) as u32;
+            let click = gtk4::GestureClick::new();
+            click.connect_pressed(move |_, _, _, _| {
+                let current = *state.borrow();
+                let day = current.day().min(date::days_in_month(current.year(), m));
+                let next = NaiveDate::from_ymd_opt(current.year(), m, day).unwrap();
+                *state.borrow_mut() = next;
+                *view.borrow_mut() = ViewMode::Days;
+                render_days(&grid, &month_label, &year_label, next);
+            });
+            lbl.add_controller(click);
+        }
+        grid.attach(&lbl, col, row as i32, 1, 1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_years(
+    grid: &gtk4::Grid,
+    month_label: &gtk4::Label,
+    year_label: &gtk4::Label,
+    footer: &gtk4::Label,
+    state: &Rc<RefCell<NaiveDate>>,
+    view: &Rc<RefCell<ViewMode>>,
+    cursor: &Rc<RefCell<usize>>,
+    selected: NaiveDate,
+) {
+    let base_year = (selected.year() / 12) * 12;
+    month_label.set_text(&format!("{}–{}", base_year, base_year + 11));
+    year_label.set_text("");
+    footer.set_text("hjkl nav   Enter select   q back");
+
+    while let Some(child) = grid.first_child() {
+        grid.remove(&child);
+    }
+
+    let cur = *cursor.borrow();
+    for i in 0..12 {
+        let y = base_year + i;
+        let col = i % 4;
+        let row = i / 4;
+        let lbl = gtk4::Label::new(Some(&y.to_string()));
+        lbl.add_css_class("waycal-year");
+        if i as usize == cur {
+            lbl.add_css_class("selected");
+        }
+        {
+            let state = state.clone();
+            let view = view.clone();
+            let grid = grid.clone();
+            let month_label = month_label.clone();
+            let year_label = year_label.clone();
+            let click = gtk4::GestureClick::new();
+            click.connect_pressed(move |_, _, _, _| {
+                let current = *state.borrow();
+                let day = current.day().min(date::days_in_month(y, current.month()));
+                let next = NaiveDate::from_ymd_opt(y, current.month(), day).unwrap();
+                *state.borrow_mut() = next;
+                *view.borrow_mut() = ViewMode::Days;
+                render_days(&grid, &month_label, &year_label, next);
+            });
+            lbl.add_controller(click);
+        }
         grid.attach(&lbl, col, row, 1, 1);
     }
 }

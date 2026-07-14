@@ -70,6 +70,37 @@ window.waycal {
     margin-top: 6px;
     border-top: 1px solid alpha(@waycal_accent, 0.18);
 }
+.waycal-clickable {
+    cursor: pointer;
+}
+.waycal-clickable:hover {
+    color: @waycal_accent;
+}
+.waycal-month,
+.waycal-year {
+    padding: 8px 12px;
+    min-width: 48px;
+    text-align: center;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.waycal-month:hover,
+.waycal-year:hover {
+    background-color: alpha(@waycal_accent, 0.15);
+}
+.waycal-month.selected,
+.waycal-year.selected {
+    background-color: @waycal_accent;
+    color: @waycal_accent_fg;
+    font-weight: bold;
+}
+popover contents {
+    background-color: @waycal_bg;
+    color: @waycal_fg;
+    border: 1px solid @waycal_accent;
+    border-radius: 4px;
+    padding: 8px 12px;
+}
 "#;
 
 fn user_style_path() -> Option<PathBuf> {
