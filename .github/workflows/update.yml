@@ -19,18 +19,6 @@ jobs:
       - name: Update flake inputs
         run: nix flake update
 
-      - name: Sync upstream waycal
-        run: |
-          git clone --depth 1 https://github.com/ForrestKnight/waycal.git /tmp/upstream
-          cp -r /tmp/upstream/src/* src/
-          cp /tmp/upstream/Cargo.lock .
-          cp /tmp/upstream/Cargo.toml .
-
-      - name: Sync version
-        run: |
-          UPSTREAM_VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          sed -i "s|version = \".*\";|version = \"${UPSTREAM_VER}\";|" flake.nix
-
       - name: Check for changes
         id: diff
         run: |
@@ -48,12 +36,10 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          commit-message: "chore: update waycal and flake inputs"
-          title: "chore: update waycal and flake inputs"
+          commit-message: "chore: update flake inputs"
+          title: "chore: update flake inputs"
           body: |
-            Automated update:
-            - Synced latest upstream [ForrestKnight/waycal](https://github.com/ForrestKnight/waycal)
-            - Updated nix flake inputs
+            Automated update: updated nix flake inputs.
             
             Built successfully before creating this PR.
           branch: auto-update
