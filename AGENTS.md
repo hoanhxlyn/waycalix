@@ -43,8 +43,7 @@ CI requires `CACHIX_AUTH_TOKEN` repo secret.
 
 `.github/workflows/update.yml` runs on the 1st and 15th of each month:
 1. Updates nix flake inputs
-2. Pulls latest `src/`, `Cargo.toml`, `Cargo.lock` from upstream ForrestKnight/waycal
-3. Syncs version from `Cargo.toml` into `flake.nix`
-4. Builds to verify, then commits and pushes if anything changed
+2. Builds to verify, pushes the result to cachix
+3. Commits straight to `main` (no PR)
 
 Can also be triggered manually via `workflow_dispatch`.
